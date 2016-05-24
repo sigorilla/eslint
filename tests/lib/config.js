@@ -16,7 +16,8 @@ var assert = require("chai").assert,
     Config = require("../../lib/config"),
     environments = require("../../conf/environments"),
     sinon = require("sinon"),
-    proxyquire = require("proxyquire");
+    proxyquire = require("proxyquire"),
+    mockFs = require("mock-fs");
 
 require("shelljs/global");
 proxyquire = proxyquire.noCallThru().noPreserveCache();
@@ -133,18 +134,151 @@ describe("Config", function() {
     });
 
     describe("findLocalConfigFiles()", function() {
+        var DIRECTORY_CONFIG_HIERARCHY = {
+            "broken" : {
+                ".eslintrc" : "env: \r\n    node: true\r\nrules:\r\n    quotes: [2, \"double\"]\r\n",
+                "add-conf.yaml" : "rules:\r\n    semi: [1, \"never\"]\r\n",
+                "console-wrong-quotes-node.js" : "\r\n/*eslint-env node*/\r\n\r\nconsole.log('bar');\r\n",
+                "console-wrong-quotes.js" : "console.log('bar');\r\n",
+                "override-conf.yaml" : "rules:\r\n    quotes: 0\r\n",
+                "override-env-conf.yaml" : "extends: \"eslint:recommended\"\nenv:\n    node: true\nrules:\n    no-mixed-requires: 0\n",
+                "package.json" : "{\r\n  \"name\": \"\",\r\n  \"version\": \"\",\r\n  \"eslintConfig\": {}\r\n}\r\n",
+                "plugins" : {
+                    ".eslintrc" : "plugins: \r\n    [\"example\"]\r\n    ",
+                    "console-wrong-quotes.js" : "console.log('bar');\r\n"
+                },
+                "plugins2" : {
+                    ".eslintrc" : "plugins: \r\n    [\"example\", \"eslint-plugin-test\"]\r\n    ",
+                    "console-wrong-quotes.js" : "console.log('bar');\r\n"
+                },
+                "process-exit.js" : "process.exit(0);\r\n",
+                "subbroken" : {
+                    ".eslintrc" : "rules:\r\n    no-console: 1\r\n    quotes: [2, \"single\"]\r\n",
+                    "console-wrong-quotes.js" : "console.log('bar');\r\n",
+                    "subsubbroken" : {
+                        ".eslintrc" : "rules:\r\n    no-console: 0\r\n    quotes: [1, \"double\"]\r\n",
+                        "console-wrong-quotes.js" : "console.log('bar');\r\n"
+                    }
+                },
+                "wrong-quotes.js" : "// function is necessary to avoid any other errors\r\nfunction foo(bar) {\r\n    \"use strict\";\r\n    return bar;\r\n}\r\n\r\nfoo('bar');\r\n"
+            },
+            "envs" : {
+                ".eslintrc.json" : "{\n  \"root\": true,\n  \"env\": { \"node\": true }\n}\n",
+                "sub" : {
+                    ".eslintrc.json" : "{\n  \"env\": { \"node\": false, \"browser\": true }\n}\n",
+                    "foo.js" : "foo;\n"
+                }
+            },
+            "fileexts" : {
+                ".eslintrc.js" : "module.exports = {\n    rules: {\n        semi: [2, \"always\"]\n    },\n    root: true\n};\n",
+                "subdir" : {
+                    ".eslintrc.yml" : "rules:\n  eqeqeq: 2\n",
+                    "subsubdir" : {
+                        ".eslintrc.json" : "{\n    \"env\": {\n        \"browser\": true\n    }\n}\n"
+                    }
+                }
+            },
+            "overwrite-ecmaFeatures" : {
+                ".eslintrc" : "{\n    \"ecmaFeatures\": {\n        \"globalReturn\": false\n    }\n}\n",
+                "child" : {
+                    ".eslintrc" : "{\n    \"env\": {\n        \"commonjs\": true\n    }\n}\n"
+                }
+            },
+            "packagejson" : {
+                ".eslintrc" : "rules:\r\n    quotes: [2, \"double\"]\r\n",
+                "package.json" : "{\r\n  \"name\": \"\",\r\n  \"version\": \"\",\r\n  \"eslintConfig\": {\r\n    \"rules\": {\r\n      \"quotes\": [1, \"single\"]\r\n    }\r\n  }\r\n}\r\n",
+                "subdir" : {
+                    "package.json" : "{\r\n  \"name\": \"\",\r\n  \"version\": \"\",\r\n  \"eslintConfig\": {\r\n    \"rules\": {\r\n      \"quotes\": [1, \"double\"]\r\n    }\r\n  }\r\n}\r\n",
+                    "subsubdir" : {
+                        "package.json" : "{\r\n  \"name\": \"\",\r\n  \"version\": \"\",\r\n  \"eslintConfig\": {\r\n    \"rules\": {\r\n      \"quotes\": [2, \"single\"]\r\n    }\r\n  }\r\n}\r\n",
+                        "subsubsubdir" : {
+                            "package.json" : "{\r\n  \"name\": \"\",\r\n  \"version\": \"\",\r\n  \"eslintConfig\": {\r\n    \"rules\": {\r\n      \"quotes\": [2, \"double\"]\r\n    }\r\n  }\r\n}\r\n",
+                            "wrong-quotes.js" : "var str = 'quotes';\r\n"
+                        },
+                        "wrong-quotes.js" : "var str = 'quotes';\r\n"
+                    },
+                    "wrong-quotes.js" : "var str = 'quotes';\r\n"
+                },
+                "wrong-quotes.js" : "var str = 'quotes';\r\n"
+            },
+            "personal-config" : {
+                "home-folder-with-packagejson" : {
+                    "package.json" : "{\n    \"name\": \"foo\",\n    \"version\": \"1.0.0\"\n}"
+                },
+                "home-folder" : {
+                    ".eslintrc.json" : "{\n    \"rules\": {\n        \"home-folder-rule\": 2\n    }\n}\n",
+                    "project" : {
+                        ".eslintrc" : "{\n    \"rules\": {\n        \"project-level-rule\": 2\n    }\n}\n",
+                        "package.json" : "{}\n"
+                    }
+                },
+                "project-with-config" : {
+                    ".eslintrc" : "{\n    \"rules\": {\n        \"project-level-rule\": 2\n    }\n}\n",
+                    "package.json" : "{}\n",
+                    "subfolder" : {
+                        ".eslintrc" : "{\n    \"rules\": {\n        \"subfolder-level-rule\": 2\n    }\n}\n"
+                    }
+                },
+                "project-without-config" : {
+                    "package.json" : "{}\n"
+                }
+            },
+            "root-true" : {
+                "parent" : {
+                    ".eslintrc" : "{\n    \"rules\": {\n        \"semi\": [2, \"always\"],\n        \"quotes\": [2, \"single\"]\n    },\n    \"extends\": [\n        \"eslint-config-test\"\n    ]\n}\n",
+                    "root" : {
+                        ".eslintrc" : "{\n    \"root\": true,\n    \"rules\": {\n        \"semi\": [2, \"never\"]\n    }\n}\n",
+                        "wrong-semi.js" : "var str = 'quotes'\n"
+                    }
+                }
+            },
+            "shared" : {
+                "a" : {
+                    ".eslintrc" : "{\r\n  \"extends\": \"example\",\r\n  \"rules\": {\r\n    \"quotes\": [ 2, \"single\" ]\r\n  }\r\n}\r\n",
+                    "index.js" : ""
+                },
+                "b" : {
+                    ".eslintrc" : "{\r\n  \"extends\": \"example\"\r\n}\r\n",
+                    "index.js" : ""
+                }
+            }
+        };
+
+        function getFakeFixturePath() {
+            var args = Array.prototype.slice.call(arguments);
+
+            args.unshift("config-hierarchy");
+            args.unshift("fixtures");
+            args.unshift("eslint");
+            args.unshift(process.cwd());
+            return path.join.apply(path, args);
+        }
+
+        before(function() {
+            mockFs({
+                eslint: {
+                    fixtures: {
+                        "config-hierarchy": DIRECTORY_CONFIG_HIERARCHY
+                    }
+                }
+            });
+        });
+
+        after(function() {
+            mockFs.restore();
+        });
 
         it("should return the path when an .eslintrc file is found", function() {
             var configHelper = new Config(),
-                expected = getFixturePath("broken", ".eslintrc"),
-                actual = configHelper.findLocalConfigFiles(getFixturePath("broken"))[0];
+                expected = getFakeFixturePath("broken", ".eslintrc"),
+                actual = configHelper.findLocalConfigFiles(getFakeFixturePath("broken"))[0];
 
             assert.equal(actual, expected);
         });
 
         it("should return an empty array when an .eslintrc file is not found", function() {
             var configHelper = new Config(),
-                actual = configHelper.findLocalConfigFiles(getFixturePath());
+                actual = configHelper.findLocalConfigFiles(getFakeFixturePath());
 
             assert.isArray(actual);
             assert.lengthOf(actual, 0);
@@ -152,9 +286,9 @@ describe("Config", function() {
 
         it("should return package.json only when no other config files are found", function() {
             var configHelper = new Config(),
-                expected0 = getFixturePath("packagejson", "subdir", "package.json"),
-                expected1 = getFixturePath("packagejson", ".eslintrc"),
-                actual = configHelper.findLocalConfigFiles(getFixturePath("packagejson", "subdir"));
+                expected0 = getFakeFixturePath("packagejson", "subdir", "package.json"),
+                expected1 = getFakeFixturePath("packagejson", ".eslintrc"),
+                actual = configHelper.findLocalConfigFiles(getFakeFixturePath("packagejson", "subdir"));
 
             assert.isArray(actual);
             assert.lengthOf(actual, 2);
@@ -164,10 +298,10 @@ describe("Config", function() {
 
         it("should return the only one config file even if there are multiple found", function() {
             var configHelper = new Config(),
-                expected = getFixturePath("broken", ".eslintrc"),
+                expected = getFakeFixturePath("broken", ".eslintrc"),
 
                 // The first element of the array is the .eslintrc in the same directory.
-                actual = configHelper.findLocalConfigFiles(getFixturePath("broken"));
+                actual = configHelper.findLocalConfigFiles(getFakeFixturePath("broken"));
 
             assert.equal(actual.length, 1);
             assert.equal(actual, expected);
@@ -176,19 +310,19 @@ describe("Config", function() {
         it("should return all possible files when multiple are found", function() {
             var configHelper = new Config(),
                 expected = [
-                    getFixturePath("fileexts/subdir/subsubdir/", ".eslintrc.json"),
-                    getFixturePath("fileexts/subdir/", ".eslintrc.yml"),
-                    getFixturePath("fileexts", ".eslintrc.js")
+                    getFakeFixturePath("fileexts/subdir/subsubdir/", ".eslintrc.json"),
+                    getFakeFixturePath("fileexts/subdir/", ".eslintrc.yml"),
+                    getFakeFixturePath("fileexts", ".eslintrc.js")
                 ],
 
-                actual = configHelper.findLocalConfigFiles(getFixturePath("fileexts/subdir/subsubdir"));
+                actual = configHelper.findLocalConfigFiles(getFakeFixturePath("fileexts/subdir/subsubdir"));
 
             assert.deepEqual(actual, expected);
         });
 
         it("should return an empty array when a package.json file is not found", function() {
             var configHelper = new Config(),
-                actual = configHelper.findLocalConfigFiles(getFixturePath());
+                actual = configHelper.findLocalConfigFiles(getFakeFixturePath());
 
             assert.isArray(actual);
             assert.lengthOf(actual, 0);
